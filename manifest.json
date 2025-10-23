@@ -1,0 +1,11 @@
+{
+	"id": "actions",
+	"name": "Actions",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+  "description": "Create and manage custom `shell` or `js` actions that can run on either a schedule, via command palette, or in response to file events.",
+	"author": "@mcmanussliam",
+	"authorUrl": "https://github.com/mcmanussliam",
+	"fundingUrl": "https://ko-fi.com/mcmanussliam",
+	"isDesktopOnly": true
+}

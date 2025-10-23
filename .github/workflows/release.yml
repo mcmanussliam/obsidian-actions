@@ -1,0 +1,47 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+env:
+  PLUGIN_NAME: actions
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: setup node
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18.x"
+
+      - name: build
+        run: |
+          npm ci
+          npm run build
+
+      - name: zip
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          mkdir ${{env.PLUGIN_NAME}}
+          cp dist/main.js dist/manifest.json dist/styles.css ${{env.PLUGIN_NAME}}
+          zip -r obsidian-${{env.PLUGIN_NAME}}-"$tag".zip ${{env.PLUGIN_NAME}}
+
+      - name: release
+        env:
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+
+          gh release create "$tag" \
+            --title="$tag" \
+            --draft \
+            dist/main.js dist/manifest.json dist/styles.css obsidian-${{env.PLUGIN_NAME}}-"$tag".zip
