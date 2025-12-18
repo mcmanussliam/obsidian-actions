@@ -1,0 +1,40 @@
+name: lint n build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  NODE_VERSION: 18.x
+
+jobs:
+  lint-m-build:
+    name: lint n build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: install deps
+        run: npm ci
+
+      - name: lint code
+        run: npm run lint
+
+      - name: build plugin
+        run: npm run build
+
+      - name: verify build output
+        run: |
+          cd dist
+          test -f main.js || (echo "main.js not found after build" && exit 1)
+          test -f manifest.json || (echo "manifest.json not found" && exit 1)
+          test -f styles.css || (echo "styles.css not found" && exit 1)
