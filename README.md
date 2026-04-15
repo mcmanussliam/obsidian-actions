@@ -10,72 +10,88 @@
 
 # Obsidian Actions
 
-**Actions** is an Obsidian plugin that allows you to define custom `shell` or `javascript` actions which are then triggered by a variety of hooks. These actions can manipulate files, execute scripts, or automate workflows inside your Obsidian vault.
+Obsidian Actions is a lightweight Obsidian plugin for small automations. Each
+action has three parts:
 
-I designed it to be as flexible as possible, exposing a controlled environment of variables and methods to help you template your scripts.
+- a trigger
+- an execution type
+- a code body
 
-## Features
-
-- define manual, startup, event-based, or interval-based actions.
-- support for both `javascript` and `shell` commands.
-- use template variables to dynamically access file and editor context.
-- supports `cron` styled scheduled actions with interval hooks.
-
-## Installing
-
-**If you are manually installing the plugin**:
-
-- copy `main.js`, `styles.css`, and `manifest.json` into `[your_vault_folder]/.obsidian/plugins/actions`
-- enable the plugin from Obsidian settings → Community Plugins → Actions Plugin.
-
-**If you are developing**:
-
-- clone the repo
-- install dependencies, `npm ci`, if you are ever to add new dependencies please always lock the version, the days of `^` are long gone.
-- create a symlink from your plugin folder to your obsidian vault.
-  - on macOS / Linux `ln -s /full/path/to/your/repo /full/path/to/your/vault/.obsidian/plugins/actions-plugin`
-- start watch mode to compile TypeScript automatically `npm run dev`
-- then enable the plugin in Obsidian and you should see your changes reflected.
-
-## Using the Plugin
-
-- open Settings -> Actions.
-- create a new action using the Create button.
-- configure the action:
-  - `name`, displayed in the ui and used to generate the action id.
-  - `icon`, choose any [Lucide](https://lucide.dev/icons/) icon
-  - `description`, optional description shown in settings.
-  - `hook`, determines when the action runs; `manual`, `startup`, `interval`, or on `events`.
-  - `type`, `js` or `shell`.
-  - `code`, the command or script to execute.
-  - `schedule`, required if using an interval hook, in `cron` format.
-- save the action. You can now execute it manually or wait for its hook trigger.
-
-## Wanna know more about the Plugin?
-
-### Hooks?
-
-Hooks determine when your action runs:
+Use it to run commands, call scripts, show notices, or respond to Obsidian
+events without building a full plugin. See documentation [here](https://www.mcmanussliam.com/docs/obsidian-actions).
 
 
-| Hook         | Description                                                                |
-| ------------ | -------------------------------------------------------------------------- |
-| `manual`     | Executes only when manually triggered via the settings or command palette. |
-| `startup`    | Executes automatically when Obsidian loads.                                |
-| `interval`   | Executes on a schedule using cron syntax, `* * * * *`.                     |
-| `createFile` | Executes whenever a new file is created in the vault.                      |
-| `modifyFile` | Executes whenever a file is modified.                                      |
-| `deleteFile` | Executes whenever a file is deleted.                                       |
-| `renameFile` | Executes whenever a file is renamed.                                       |
+## Install
 
+### Community Plugin
 
-Interval hooks require a valid cron schedule. See [crontab.guru](https://crontab.guru/examples.html) for examples.
+Since this plugin isn't officially released in the Community Plugins store yet,
+the easiest way to install it is with Obsidian [BRAT](https://obsidian.md/plugins?id=obsidian42-brat),
+which lets you install plugins directly from GitHub.
 
-### Command Types?
+After BRAT is enabled:
 
-#### `javascript`
+* Open Settings
+* Go to BRAT
+* Click Add Beta Plugin
+  * You'll be asked for the plugin's GitHub repository URL. ([https://github.com/mcmanussliam/obsidian-actions](https://github.com/mcmanussliam/obsidian-actions))
+* Install it
 
-`js` actions are executed in a controlled environment with access to a subset of the Obsidian API and helper functions, this includes:
+### Manual Install
+
+Copy the plugin files into:
+
+```text
+<vault>/.obsidian/plugins/actions
+```
+
+Required files:
+
+- `main.js`
+- `styles.css`
+- `manifest.json`
+
+## Quick Start
+
+1. Open `Settings -> Actions`.
+2. Create a new action.
+3. Choose a trigger.
+4. Choose `js` or `shell`.
+5. Write the code.
+6. Restart Obsidian to register commands and hooks.
+
+Start with a manual JavaScript action:
+
+```javascript
+new Notice("Action ran");
+```
+
+Suggested fields:
+
+- `hook`: `manual`
+- `type`: `js`
+- `enabled`: `true`
+
+## Triggers
+
+| Hook | Behavior |
+|---|---|
+| `manual` | Runs when you trigger it from Obsidian |
+| `startup` | Runs when the plugin loads |
+| `interval` | Runs on a cron schedule |
+| `createFile` | Runs when a file is created |
+| `modifyFile` | Runs when a file is modified |
+| `deleteFile` | Runs when a file is deleted |
+| `renameFile` | Runs when a file is renamed |
+
+## Execution Types
+
+| Type | Use It For |
+|---|---|
+| `js` | Obsidian-aware automations that need app APIs, notices, or editor context |
+| `shell` | Existing scripts, CLI tools, or system workflows |
+
+Available JavaScript helpers include:
 
 - `app`
 - `vault`
@@ -88,54 +104,58 @@ Interval hooks require a valid cron schedule. See [crontab.guru](https://crontab
 - `FuzzySuggestModal`
 - `exec`
 
-This can allow you to do some really interesting code:
+## Runtime Variables
+
+Before an action runs, the plugin renders its code with Mustache templates such
+as `{{file_name}}` or `{{path}}`.
+
+Available variables include:
+
+- `path`
+- `relative_path`
+- `extension`
+- `selected`
+- `word_count`
+- `vault_name`
+- `file_name`
+- `file_name_with_ext`
+- `content`
+- `timestamp`
+- `date`
+- `time`
+
+Example:
+
+```bash
+echo "Processing {{{file_name_with_ext}}} at {{time}}"
+```
+
+## Compatibility
+
+| Type | Desktop | Mobile |
+|---|---|---|
+| `js` | Supported | Depends on the APIs and code you use |
+| `shell` | Supported where Obsidian can execute local shell commands | Not reliable on mobile |
+
+`shell` actions are best suited to desktop environments with access to local
+scripts, binaries, and a usable shell environment.
+
+## Examples
+
+Open the current file in VS Code:
+
+```bash
+/path/to/code "{{{path}}}"
+```
+
+Show the current file in a notice:
 
 ```javascript
-new Notice('Hello World!'); // displays a notice in Obsidian
-console.log(app.vault.getFiles()); // logs in the Obsidian console
-exec('echo "{{path}}"'); // execs a shell command with an environment variable
+new Notice(`Current file: {{{file_name_with_ext}}}`);
 ```
 
-#### `shell`
+Run a backup script on a schedule:
 
-`shell` actions execute code in a plain `shell`. It's useful for running scripts, git commands, or other cli tools:
-
-```shell
-git add .
-git commit -m "Update"
-git push
-```
-
-### Environment Variables?
-
-Actions have access to dynamic variables reflecting the current file and editor context.
-
-| Variable            | Description                           |
-|---------------------|--------------------------------------|
-| `path`              | Absolute file path.                  |
-| `relative_path`     | File path relative to vault root.    |
-| `extension`         | File extension.                      |
-| `readonly`          | True if the editor is read-only.     |
-| `selected`          | Selected text in the editor.         |
-| `selected_lower`    | Lowercase selected text.             |
-| `selected_upper`    | Uppercase selected text.             |
-| `length_selected`   | Length of selected text.             |
-| `word_count`        | Word count of file or selection.     |
-| `line_index`        | Cursor line index (0-based).         |
-| `column_index`      | Cursor column index.                 |
-| `vault_name`        | Name of the vault.                   |
-| `file_name`         | File name without extension.         |
-| `file_name_with_ext`| File name with extension.            |
-| `content`           | Full file content.                   |
-| `content_length`    | Length of file content.              |
-| `timestamp`         | ISO timestamp of execution.          |
-| `date`              | Human-readable date.                 |
-| `time`              | Human-readable time.                 |
-| `hello_world`       | Test variable for experimentation.   |
-
-
-We use [Mustache templates](https://mustache.github.io/) for this.
-
-```shell
-echo "Processing file {{file_name}} at {{time}}"
+```bash
+/absolute/path/to/backup-vault.sh
 ```
