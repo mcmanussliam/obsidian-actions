@@ -1,4 +1,4 @@
-import {FileSystemAdapter, FuzzySuggestModal, Modal, normalizePath, Notice, Plugin, Setting} from 'obsidian';
+import {FileSystemAdapter, FuzzySuggestModal, Modal, normalizePath, Notice, Plugin, Setting, TAbstractFile} from 'obsidian';
 import {DEFAULT_SETTINGS, SettingsTab, ActionsSettings, Action} from './settings';
 import {keyByMap} from './utils/key-by-map';
 import {ChildProcess, exec, ExecException, ExecOptions} from 'child_process';
@@ -122,10 +122,68 @@ export default class ActionsPlugin extends Plugin {
 		this.activeChildren.clear();
 	}
 
+	public async upsertAction(action: Action, index?: number, previousId?: string): Promise<void> {
+		if (typeof index === 'number') {
+			this.settings.actions[index] = action;
+		} else {
+			this.settings.actions.push(action);
+		}
+
+		if (previousId && previousId !== action.id) {
+			this.actions.delete(previousId);
+			await this.stopJob(previousId);
+		}
+
+		this.actions.set(action.id, action);
+
+		if (action.enabled && action.hook === 'interval') {
+			await this.registerIntervalAction(action);
+		} else {
+			await this.stopJob(action.id);
+		}
+
+		await this.saveSettings();
+	}
+
+	public async removeAction(id: string): Promise<void> {
+		this.settings.actions = this.settings.actions.filter(action => action.id !== id);
+		this.actions.delete(id);
+		await this.stopJob(id);
+		await this.saveSettings();
+	}
+
+	public async clearActions(): Promise<void> {
+		for (const id of this.actions.keys()) {
+			await this.stopJob(id);
+		}
+
+		this.settings.actions = [];
+		this.actions.clear();
+		await this.saveSettings();
+	}
+
+	public async setActionEnabled(id: string, enabled: boolean): Promise<void> {
+		const action = this.actions.get(id);
+		if (!action) {
+			return;
+		}
+
+		action.enabled = enabled;
+
+		if (action.enabled && action.hook === 'interval') {
+			await this.registerIntervalAction(action);
+		} else {
+			await this.stopJob(id);
+		}
+
+		await this.saveSettings();
+	}
+
 	private async registerActions(): Promise<void> {
 		for (const action of this.settings.actions) {
 			if (!action.enabled) {
-				return;
+				await this.stopJob(action.id);
+				continue;
 			}
 
 			switch (action.hook) {
@@ -147,71 +205,80 @@ export default class ActionsPlugin extends Plugin {
 				}
 
 				case 'createFile': {
-					this.registerEvent(this.app.vault.on('create', () => {
-					void this.execute(action.id);
-				}));
+					this.registerEvent(this.app.vault.on('create', file => {
+						void this.execute(action.id, {overrides: this.fileEnvironment(file)});
+					}));
 
 					console.debug(`registered create file action ${action.id}`);
 					break;
 				}
 
 				case 'modifyFile': {
-					this.registerEvent(this.app.vault.on('modify', () => {
-					void this.execute(action.id);
-				}));
+					this.registerEvent(this.app.vault.on('modify', file => {
+						void this.execute(action.id, {overrides: this.fileEnvironment(file)});
+					}));
 
 					console.debug(`registered modify file action ${action.id}`);
 					break;
 				}
 
 				case 'deleteFile': {
-					this.registerEvent(this.app.vault.on('delete', () => {
-					void this.execute(action.id);
-				}));
+					this.registerEvent(this.app.vault.on('delete', file => {
+						void this.execute(action.id, {overrides: this.fileEnvironment(file)});
+					}));
 
 					console.debug(`registered delete file action ${action.id}`);
 					break;
 				}
 
 				case 'renameFile': {
-					this.registerEvent(this.app.vault.on('rename', () => {
-					void this.execute(action.id);
-				}));
+					this.registerEvent(this.app.vault.on('rename', file => {
+						void this.execute(action.id, {overrides: this.fileEnvironment(file)});
+					}));
 
 					console.debug(`registered rename file action ${action.id}`);
 					break;
 				}
 
 				case 'interval': {
-					const cronTime = action.schedule;
-					if (!cronTime) {
-						console.error(`invalid setup for interval action ${action.id}, missing schedule`);
-						break;
-					}
-
-					const existingJob = this.jobs.get(action.id);
-					if (existingJob) {
-						await existingJob.stop();
-					}
-
-					try {
-						const job = CronJob.from({
-							onTick: () => void this.execute(action.id),
-							start: true,
-							cronTime,
-						});
-
-						this.jobs.set(action.id, job);
-					} catch (err) {
-						console.error(`failed to register interval action ${action.id}`, err);
-						break;
-					}
-
+					await this.registerIntervalAction(action);
 					console.debug(`registered interval action ${action.id} with schedule ${action.schedule}`);
 					break;
 				}
 			}
 		}
+	}
+
+	private async registerIntervalAction(action: Action): Promise<void> {
+		const cronTime = action.schedule;
+		if (!cronTime) {
+			console.error(`invalid setup for interval action ${action.id}, missing schedule`);
+			return;
+		}
+
+		await this.stopJob(action.id);
+
+		try {
+			const job = CronJob.from({
+				onTick: () => void this.execute(action.id),
+				start: true,
+				cronTime,
+			});
+
+			this.jobs.set(action.id, job);
+		} catch (err) {
+			console.error(`failed to register interval action ${action.id}`, err);
+		}
+	}
+
+	private async stopJob(id: string): Promise<void> {
+		const existingJob = this.jobs.get(id);
+		if (!existingJob) {
+			return;
+		}
+
+		await existingJob.stop();
+		this.jobs.delete(id);
 	}
 
 	/**
@@ -223,12 +290,13 @@ export default class ActionsPlugin extends Plugin {
 	 * @see handleJS Executes in a controlled JavaScript environment.
 	 * @see handleShell Executes in a plain shell environment.
 	 */
-	private environment(): Partial<Environment> {
+	private environment(fileOverride?: TAbstractFile): Partial<Environment> {
 		const env: Partial<Environment> = {};
 
-		const file = this.app.workspace.getActiveFile();
+		const file = fileOverride ?? this.app.workspace.getActiveFile();
 		if (file) {
 			const {adapter} = this.app.vault;
+			const extension = path.extname(file.path).replace(/^\./, '');
 
 			if (adapter instanceof FileSystemAdapter) {
 				const vault = adapter.getBasePath();
@@ -238,10 +306,10 @@ export default class ActionsPlugin extends Plugin {
 			}
 
 			env.relative_path = file.path;
-			env.extension = file.extension;
+			env.extension = extension;
 
 			env.file_name_with_ext = path.basename(file.path);
-			env.file_name = path.basename(file.path, `.${file.extension}`);
+			env.file_name = extension ? path.basename(file.path, `.${extension}`) : path.basename(file.path);
 		}
 
 		const editor = this.app.workspace.activeEditor?.editor;
@@ -267,6 +335,10 @@ export default class ActionsPlugin extends Plugin {
 		env.time = now.toLocaleTimeString();
 
 		return env;
+	}
+
+	private fileEnvironment(file: TAbstractFile): Partial<Environment> {
+		return this.environment(file);
 	}
 
 	/**

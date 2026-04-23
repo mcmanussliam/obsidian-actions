@@ -1,8 +1,8 @@
-import {PluginSettingTab, App, Setting, Command, Modal, IconName, Notice} from 'obsidian';
+import {PluginSettingTab, App, Setting, Modal, IconName, Notice} from 'obsidian';
 import ActionsPlugin from './main';
 import {html} from './utils/html';
 import {kebabCase} from './utils/kebab-case';
-import { Agenda } from './types/agenda';
+import {Agenda} from './types/agenda';
 
 export type ActionHook = 'startup' | 'interval' | 'manual' | 'createFile' | 'modifyFile' | 'deleteFile' | 'renameFile';
 
@@ -98,9 +98,7 @@ export class SettingsTab extends PluginSettingTab {
             .setTooltip(this.plugin.i18n.tr('common', 'edit'))
             .onClick(() => {
               const onSubmit = async(result: Action) => {
-                this.plugin.settings.actions[index] = result;
-                this.plugin.actions.set(result.id, result);
-                await this.plugin.saveSettings();
+                await this.plugin.upsertAction(result, index, action.id);
                 this.display();
               };
 
@@ -113,9 +111,7 @@ export class SettingsTab extends PluginSettingTab {
             .setIcon('trash')
             .setTooltip(this.plugin.i18n.tr('common', 'delete'))
             .onClick(async() => {
-              this.plugin.settings.actions = this.plugin.settings.actions.filter(c => c.id !== action.id);
-              this.plugin.actions.delete(action.id);
-              await this.plugin.saveSettings();
+              await this.plugin.removeAction(action.id);
               this.display();
             });
         })
@@ -123,9 +119,7 @@ export class SettingsTab extends PluginSettingTab {
           tgl
             .setValue(action.enabled)
             .onChange(async flag => {
-              action.enabled = flag;
-              this.plugin.actions.set(action.id, action);
-              await this.plugin.saveSettings();
+              await this.plugin.setActionEnabled(action.id, flag);
               this.display();
             });
         });
@@ -138,8 +132,7 @@ export class SettingsTab extends PluginSettingTab {
         btn
           .setButtonText(this.plugin.i18n.tr('common', 'clear_all'))
           .onClick(async() => {
-            this.plugin.settings.actions = [];
-            await this.plugin.saveSettings();
+            await this.plugin.clearActions();
             this.display();
           });
       });
@@ -153,10 +146,7 @@ export class SettingsTab extends PluginSettingTab {
         .setButtonText(this.plugin.i18n.tr('common', 'create'))
         .onClick(() => {
           const onSubmit = async(action: Action) => {
-            this.plugin.settings.actions.push(action);
-            this.plugin.actions.set(action.id, action);
-            await this.plugin.saveSettings();
-
+            await this.plugin.upsertAction(action);
             this.display();
           };
 
@@ -176,9 +166,9 @@ export class CreateEditActionModal extends Modal {
 
   private readonly original?: string;
 
-  private readonly onSubmit: (_: Command) => Promise<void>;
+  private readonly onSubmit: (_: Action) => Promise<void>;
 
-  public constructor(app: App, plugin: ActionsPlugin, onSubmit: (_: Command) => Promise<void>, payload?: Action) {
+  public constructor(app: App, plugin: ActionsPlugin, onSubmit: (_: Action) => Promise<void>, payload?: Action) {
     super(app);
 
     this.plugin = plugin;
@@ -187,7 +177,7 @@ export class CreateEditActionModal extends Modal {
     if (payload) {
       this.editing = true;
       this.original = payload.id;
-      this.payload = payload;
+      this.payload = {...payload};
     } else {
       this.editing = false;
       this.payload = {
@@ -286,7 +276,7 @@ export class CreateEditActionModal extends Modal {
       });
 
     const isInterval = () => {
-  const selectedHook = this.payload.hook;
+      const selectedHook = this.payload.hook;
       const el = scheduleSetting.settingEl;
 
       if (selectedHook === 'interval') {
