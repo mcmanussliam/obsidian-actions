@@ -1,7 +1,7 @@
 import {FileSystemAdapter, FuzzySuggestModal, Modal, normalizePath, Notice, Plugin, Setting} from 'obsidian';
 import {DEFAULT_SETTINGS, SettingsTab, ActionsSettings, Action} from './settings';
 import {keyByMap} from './utils/key-by-map';
-import {exec} from 'child_process';
+import {ChildProcess, exec, ExecException, ExecOptions} from 'child_process';
 import Mustache from 'mustache';
 import {CronJob} from 'cron';
 import {I18n} from './i18n';
@@ -83,6 +83,8 @@ interface ExecutionOptions {
 	skipChecks: boolean;
 }
 
+type ExecCallback = (_error: ExecException | null, _stdout: string, _stderr: string) => void;
+
 export default class ActionsPlugin extends Plugin {
 	public i18n: I18n;
 
@@ -92,6 +94,8 @@ export default class ActionsPlugin extends Plugin {
 
 	public readonly jobs: Map<string, CronJob> = new Map();
 
+	private readonly activeChildren: Set<ChildProcess> = new Set();
+
 	public async onload(): Promise<void> {
 		this.i18n = new I18n();
 
@@ -100,6 +104,22 @@ export default class ActionsPlugin extends Plugin {
 
 		await this.registerActions();
 		this.addSettingTab(new SettingsTab(this.app, this));
+	}
+
+	public onunload(): void {
+		for (const job of this.jobs.values()) {
+			void job.stop();
+		}
+
+		this.jobs.clear();
+
+		for (const child of this.activeChildren) {
+			if (!child.killed) {
+				child.kill();
+			}
+		}
+
+		this.activeChildren.clear();
 	}
 
 	private async registerActions(): Promise<void> {
@@ -339,7 +359,7 @@ export default class ActionsPlugin extends Plugin {
 			Modal,
 			Setting,
 			FuzzySuggestModal,
-			exec,
+			exec: (command: string, options?: ExecOptions | ExecCallback, callback?: ExecCallback) => this.execShellCommand(id, command, options, callback),
 		};
 
 		try {
@@ -376,9 +396,14 @@ export default class ActionsPlugin extends Plugin {
 	private handleShell(id: string, code: string): void {
 		console.debug(`executing \`shell\` action '${id}'.`);
 
-		exec(code, (error, stdout, stderr) => {
+		this.execShellCommand(id, code);
+	}
+
+	private execShellCommand(id: string, code: string, options?: ExecOptions | ExecCallback, callback?: ExecCallback): ChildProcess {
+		const execCallback: ExecCallback = (error, stdout, stderr) => {
 			if (error) {
 				console.error(`failed executing \`shell\` action '${id}', ${String(error.message)}`);
+				callback?.(error, stdout, stderr);
 				return;
 			}
 
@@ -389,7 +414,17 @@ export default class ActionsPlugin extends Plugin {
 			if (stderr) {
 				console.error(`stderr: ${stderr}`);
 			}
-		});
+
+			callback?.(error, stdout, stderr);
+		};
+
+		const child = typeof options === 'function' ? exec(code, execCallback) : exec(code, options, execCallback);
+
+		this.activeChildren.add(child);
+		child.once('close', () => this.activeChildren.delete(child));
+		child.once('error', () => this.activeChildren.delete(child));
+
+		return child;
 	}
 
 	public async loadSettings(): Promise<ActionsSettings> {
