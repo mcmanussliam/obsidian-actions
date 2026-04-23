@@ -1,5 +1,5 @@
 import {PluginSettingTab, App, Setting, Modal, IconName, Notice} from 'obsidian';
-import ActionsPlugin from './main';
+import ActionsPlugin, {ActionExecution, ExecutionStatus} from './main';
 import {html} from './utils/html';
 import {kebabCase} from './utils/kebab-case';
 import {Agenda} from './types/agenda';
@@ -56,16 +56,27 @@ export const DEFAULT_SETTINGS: ActionsSettings = {actions: []};
 export class SettingsTab extends PluginSettingTab {
   private readonly plugin: ActionsPlugin;
 
+  private unsubscribeExecutionChanges?: () => void;
+
   public constructor(app: App, plugin: ActionsPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
 
   public display(): void {
+    if (!this.unsubscribeExecutionChanges) {
+      this.unsubscribeExecutionChanges = this.plugin.onExecutionChange(() => this.display());
+    }
+
     const container = this.containerEl;
     container.empty();
 
     this.actions(container);
+  }
+
+  public hide(): void {
+    this.unsubscribeExecutionChanges?.();
+    this.unsubscribeExecutionChanges = undefined;
   }
 
   /**
@@ -123,6 +134,8 @@ export class SettingsTab extends PluginSettingTab {
               this.display();
             });
         });
+
+      this.executionLog(host, action);
     }
 
     const controls = new Setting(host);
@@ -154,6 +167,80 @@ export class SettingsTab extends PluginSettingTab {
           modal.open();
         });
     });
+  }
+
+  private executionLog(host: HTMLElement, action: Action): void {
+    const executions = this.plugin.getExecutions(action.id);
+    const wrapper = host.createDiv({cls: 'action-run-log'});
+    const header = wrapper.createDiv({cls: 'action-run-log__header'});
+    const title = header.createDiv({cls: 'action-run-log__title'});
+    title.setText(this.plugin.i18n.tr('settings', 'run_log_title'));
+
+    if (executions.length) {
+      const clearButton = header.createEl('button', {
+        cls: 'mod-muted action-run-log__clear',
+        text: this.plugin.i18n.tr('common', 'clear'),
+      });
+
+      clearButton.addEventListener('click', () => {
+        this.plugin.clearExecutions(action.id);
+      });
+    }
+
+    if (!executions.length) {
+      wrapper.createDiv({
+        cls: 'action-run-log__empty',
+        text: this.plugin.i18n.tr('settings', 'run_log_empty'),
+      });
+      return;
+    }
+
+    for (const execution of executions) {
+      const item = wrapper.createDiv({cls: 'action-run-log__item'});
+      const meta = item.createDiv({cls: 'action-run-log__meta'});
+      meta.createSpan({
+        cls: `action-run-log__status action-run-log__status--${execution.status}`,
+        text: this.statusLabel(execution.status),
+      });
+
+      const summary = this.formatExecutionSummary(execution);
+      if (summary) {
+        meta.createSpan({cls: 'action-run-log__summary', text: summary});
+      }
+
+      if (execution.error) {
+        item.createEl('pre', {cls: 'action-run-log__output action-run-log__output--error', text: execution.error});
+      }
+
+      if (execution.stdout) {
+        item.createEl('pre', {cls: 'action-run-log__output', text: execution.stdout});
+      }
+
+      if (execution.stderr) {
+        item.createEl('pre', {cls: 'action-run-log__output action-run-log__output--error', text: execution.stderr});
+      }
+    }
+  }
+
+  private statusLabel(status: ExecutionStatus): string {
+    switch (status) {
+      case 'running':
+        return this.plugin.i18n.tr('settings', 'run_status_running');
+      case 'success':
+        return this.plugin.i18n.tr('settings', 'run_status_success');
+      case 'failed':
+        return this.plugin.i18n.tr('settings', 'run_status_failed');
+    }
+  }
+
+  private formatExecutionSummary(execution: ActionExecution): string {
+    const parts = [new Date(execution.startedAt).toLocaleString()];
+
+    if (typeof execution.durationMs === 'number') {
+      parts.push(`${execution.durationMs}ms`);
+    }
+
+    return parts.join(' - ');
   }
 }
 

@@ -11,6 +11,7 @@ const TRANSLATIONS = {
       edit: 'Edit',
       save: 'Save',
       create: 'Create',
+      clear: 'Clear',
       delete: 'Delete',
       execute: 'Execute',
       clear_all: 'Clear all',
@@ -24,6 +25,11 @@ const TRANSLATIONS = {
         menu before restarting.
       `,
       no_actions: 'No actions created',
+      run_log_title: 'Recent runs',
+      run_log_empty: 'No runs yet.',
+      run_status_running: 'Running',
+      run_status_success: 'Success',
+      run_status_failed: 'Failed',
     },
     modal: {
       edit_title: 'Edit Action',

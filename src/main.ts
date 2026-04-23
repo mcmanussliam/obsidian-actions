@@ -84,8 +84,25 @@ interface ExecutionOptions {
 }
 
 type ExecCallback = (_error: ExecException | null, _stdout: string, _stderr: string) => void;
+export type ExecutionStatus = 'running' | 'success' | 'failed';
+
+export interface ActionExecution {
+	id: string;
+	actionId: string;
+	actionName: string;
+	actionType: Action['type'];
+	status: ExecutionStatus;
+	startedAt: string;
+	finishedAt?: string;
+	durationMs?: number;
+	stdout?: string;
+	stderr?: string;
+	error?: string;
+}
 
 export default class ActionsPlugin extends Plugin {
+	private static readonly MAX_EXECUTION_LOGS = 10;
+
 	public i18n: I18n;
 
 	public settings: ActionsSettings;
@@ -94,7 +111,13 @@ export default class ActionsPlugin extends Plugin {
 
 	public readonly jobs: Map<string, CronJob> = new Map();
 
-	private readonly activeChildren: Set<ChildProcess> = new Set();
+	private readonly activeChildren: Map<ChildProcess, string> = new Map();
+
+	private readonly runLogListeners: Set<() => void> = new Set();
+
+	private readonly executions: Map<string, ActionExecution[]> = new Map();
+
+	private executionCounter = 0;
 
 	public async onload(): Promise<void> {
 		this.i18n = new I18n();
@@ -113,13 +136,34 @@ export default class ActionsPlugin extends Plugin {
 
 		this.jobs.clear();
 
-		for (const child of this.activeChildren) {
+		for (const child of this.activeChildren.keys()) {
 			if (!child.killed) {
 				child.kill();
 			}
 		}
 
 		this.activeChildren.clear();
+	}
+
+	public onExecutionChange(listener: () => void): () => void {
+		this.runLogListeners.add(listener);
+
+		return () => {
+			this.runLogListeners.delete(listener);
+		};
+	}
+
+	public getExecutions(id: string): ActionExecution[] {
+		return [...(this.executions.get(id) ?? [])];
+	}
+
+	public clearExecutions(id: string): void {
+		if (!this.executions.has(id)) {
+			return;
+		}
+
+		this.executions.delete(id);
+		this.notifyExecutionChange();
 	}
 
 	public async upsertAction(action: Action, index?: number, previousId?: string): Promise<void> {
@@ -132,6 +176,7 @@ export default class ActionsPlugin extends Plugin {
 		if (previousId && previousId !== action.id) {
 			this.actions.delete(previousId);
 			await this.stopJob(previousId);
+			this.clearExecutions(previousId);
 		}
 
 		this.actions.set(action.id, action);
@@ -149,6 +194,7 @@ export default class ActionsPlugin extends Plugin {
 		this.settings.actions = this.settings.actions.filter(action => action.id !== id);
 		this.actions.delete(id);
 		await this.stopJob(id);
+		this.clearExecutions(id);
 		await this.saveSettings();
 	}
 
@@ -159,6 +205,8 @@ export default class ActionsPlugin extends Plugin {
 
 		this.settings.actions = [];
 		this.actions.clear();
+		this.executions.clear();
+		this.notifyExecutionChange();
 		await this.saveSettings();
 	}
 
@@ -375,12 +423,12 @@ export default class ActionsPlugin extends Plugin {
 
 		switch (action.type) {
 			case 'js': {
-				this.handleJS(id, code);
+				this.handleJS(action, code);
 				break;
 			}
 
 			case 'shell': {
-				this.handleShell(id, code);
+				this.handleShell(action, code);
 				break;
 			}
 		}
@@ -417,14 +465,15 @@ export default class ActionsPlugin extends Plugin {
 	 * `);
 	 * ```
 	 */
-	private handleJS(id: string, code: string): void {
-		console.debug(`executing \`js\` action '${id}'.`);
+	private handleJS(action: Action, code: string): void {
+		console.debug(`executing \`js\` action '${action.id}'.`);
+		const execution = this.startExecution(action);
 
 		const scopedExec = (
 			command: string,
 			options?: ExecOptions | ExecCallback,
 			callback?: ExecCallback
-		) => this.execShellCommand(id, command, options, callback);
+		) => this.execShellCommand(action, command, options, callback, 'shell');
 
 		/** Methods/variables accessible in the action */
 		const methods: Record<string, unknown> = {
@@ -448,13 +497,18 @@ export default class ActionsPlugin extends Plugin {
 
 			void Promise.resolve(result)
 				.then(() => {
-					console.debug(`finished executing \`js\` action '${id}'`);
+					console.debug(`finished executing \`js\` action '${action.id}'`);
+					this.finishExecution(execution.id, action.id, {status: 'success'});
 				})
 				.catch(err => {
-					console.error(`failed to execute \`js\` action '${id}', gave the following error ${String(err)}`);
+					const error = String(err);
+					console.error(`failed to execute \`js\` action '${action.id}', gave the following error ${error}`);
+					this.finishExecution(execution.id, action.id, {status: 'failed', error});
 				});
 		} catch (err) {
-			console.error(`failed to execute \`js\` action '${id}', gave the following error ${String(err)}`);
+			const error = String(err);
+			console.error(`failed to execute \`js\` action '${action.id}', gave the following error ${error}`);
+			this.finishExecution(execution.id, action.id, {status: 'failed', error});
 		}
 	}
 
@@ -477,38 +531,120 @@ export default class ActionsPlugin extends Plugin {
 	 * `);
 	 * ```
 	 */
-	private handleShell(id: string, code: string): void {
-		console.debug(`executing \`shell\` action '${id}'.`);
+	private handleShell(action: Action, code: string): void {
+		console.debug(`executing \`shell\` action '${action.id}'.`);
 
-		this.execShellCommand(id, code);
+		this.execShellCommand(action, code);
 	}
 
-	private execShellCommand(id: string, code: string, options?: ExecOptions | ExecCallback, callback?: ExecCallback): ChildProcess {
+	private execShellCommand(
+		action: Action,
+		code: string,
+		options?: ExecOptions | ExecCallback,
+		callback?: ExecCallback,
+		actionType: Action['type'] = 'shell'
+	): ChildProcess {
+		const execution = this.startExecution(action, actionType);
+
 		const execCallback: ExecCallback = (error, stdout, stderr) => {
 			if (error) {
-				console.error(`failed executing \`shell\` action '${id}', ${String(error.message)}`);
+				const message = String(error.message);
+				console.error(`failed executing \`shell\` action '${action.id}', ${message}`);
+				this.finishExecution(execution.id, action.id, {
+					status: 'failed',
+					error: message,
+					stdout,
+					stderr,
+				});
 				callback?.(error, stdout, stderr);
 				return;
 			}
 
 			if (stdout) {
-				console.debug(`stdout from executing \`shell\` action '${stdout}`);
+				console.debug(`stdout from executing \`shell\` action '${action.id}': ${stdout}`);
 			}
 
 			if (stderr) {
-				console.error(`stderr: ${stderr}`);
+				console.error(`stderr from executing \`shell\` action '${action.id}': ${stderr}`);
 			}
 
+			this.finishExecution(execution.id, action.id, {status: 'success', stdout, stderr});
 			callback?.(error, stdout, stderr);
 		};
 
 		const child = typeof options === 'function' ? exec(code, execCallback) : exec(code, options, execCallback);
 
-		this.activeChildren.add(child);
+		this.activeChildren.set(child, execution.id);
 		child.once('close', () => this.activeChildren.delete(child));
-		child.once('error', () => this.activeChildren.delete(child));
+		child.once('error', err => {
+			this.activeChildren.delete(child);
+			this.finishExecution(execution.id, action.id, {status: 'failed', error: String(err)});
+		});
 
 		return child;
+	}
+
+	private startExecution(action: Action, actionType: Action['type'] = action.type): ActionExecution {
+		const execution: ActionExecution = {
+			id: `${Date.now()}-${this.executionCounter}`,
+			actionId: action.id,
+			actionName: action.name,
+			actionType,
+			status: 'running',
+			startedAt: new Date().toISOString(),
+		};
+
+		this.executionCounter += 1;
+
+		const existing = this.executions.get(action.id) ?? [];
+		this.executions.set(action.id, [execution, ...existing].slice(0, ActionsPlugin.MAX_EXECUTION_LOGS));
+		this.notifyExecutionChange();
+
+		return execution;
+	}
+
+	private finishExecution(
+		executionId: string,
+		actionId: string,
+		updates: Pick<ActionExecution, 'status'> & Partial<Omit<ActionExecution, 'id' | 'actionId' | 'actionName' | 'actionType' | 'startedAt'>>
+	): void {
+		const executions = this.executions.get(actionId);
+		if (!executions) {
+			return;
+		}
+
+		const execution = executions.find(entry => entry.id === executionId);
+		if (!execution || execution.status !== 'running') {
+			return;
+		}
+
+		const finishedAt = new Date().toISOString();
+		execution.status = updates.status;
+		execution.finishedAt = finishedAt;
+		execution.durationMs = new Date(finishedAt).getTime() - new Date(execution.startedAt).getTime();
+		execution.stdout = this.truncateOutput(updates.stdout);
+		execution.stderr = this.truncateOutput(updates.stderr);
+		execution.error = updates.error;
+		this.notifyExecutionChange();
+	}
+
+	private truncateOutput(value?: string): string | undefined {
+		if (!value) {
+			return undefined;
+		}
+
+		const trimmed = value.trim();
+		if (!trimmed) {
+			return undefined;
+		}
+
+		return trimmed.length > 2000 ? `${trimmed.slice(0, 2000)}...` : trimmed;
+	}
+
+	private notifyExecutionChange(): void {
+		for (const listener of this.runLogListeners) {
+			listener();
+		}
 	}
 
 	public async loadSettings(): Promise<ActionsSettings> {
