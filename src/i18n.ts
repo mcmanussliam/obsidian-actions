@@ -113,11 +113,11 @@ export class I18n {
   public constructor() {
     const locale = getLanguage();
 
-    if (TRANSLATIONS[this.locale]) {
+    if (locale in TRANSLATIONS) {
       this.locale = locale as Locale;
     } else {
       console.warn(
-        `this plugin doesn't support ${String(locale)}, feel free to leave an mr for it, defaulting back to ${String(locale)} for the now`
+        `this plugin doesn't support ${String(locale)}, defaulting back to ${String(this.locale)} for now`
       );
     }
 

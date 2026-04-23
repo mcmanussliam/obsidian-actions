@@ -420,6 +420,12 @@ export default class ActionsPlugin extends Plugin {
 	private handleJS(id: string, code: string): void {
 		console.debug(`executing \`js\` action '${id}'.`);
 
+		const scopedExec = (
+			command: string,
+			options?: ExecOptions | ExecCallback,
+			callback?: ExecCallback
+		) => this.execShellCommand(id, command, options, callback);
+
 		/** Methods/variables accessible in the action */
 		const methods: Record<string, unknown> = {
 			app: this.app,
@@ -431,19 +437,25 @@ export default class ActionsPlugin extends Plugin {
 			Modal,
 			Setting,
 			FuzzySuggestModal,
-			exec: (command: string, options?: ExecOptions | ExecCallback, callback?: ExecCallback) => this.execShellCommand(id, command, options, callback),
+			exec: scopedExec,
 		};
 
 		try {
 			// Function constructor is required to execute user-defined JavaScript
 			// code in a controlled environment with specific variables in scope
 			const fn = Function(...Object.keys(methods), code);
-			fn(...Object.values(methods));
+			const result = fn(...Object.values(methods));
+
+			void Promise.resolve(result)
+				.then(() => {
+					console.debug(`finished executing \`js\` action '${id}'`);
+				})
+				.catch(err => {
+					console.error(`failed to execute \`js\` action '${id}', gave the following error ${String(err)}`);
+				});
 		} catch (err) {
 			console.error(`failed to execute \`js\` action '${id}', gave the following error ${String(err)}`);
 		}
-
-		console.debug(`finished executing \`js\` action '${id}'`);
 	}
 
 	/**
