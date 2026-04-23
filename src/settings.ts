@@ -2,6 +2,7 @@ import {PluginSettingTab, App, Setting, Command, Modal, IconName, Notice} from '
 import ActionsPlugin from './main';
 import {html} from './utils/html';
 import {kebabCase} from './utils/kebab-case';
+import { Agenda } from './types/agenda';
 
 export type ActionHook = 'startup' | 'interval' | 'manual' | 'createFile' | 'modifyFile' | 'deleteFile' | 'renameFile';
 
@@ -39,18 +40,8 @@ export interface Action {
 	 */
 	code: string;
 
-  /**
-   * Optional schedule for when an action is ran on an interval.
-   *
-   * @see https://crontab.guru/examples.html For more in-depth examples.
-   *
-   * @example
-   * '* * * * *' // At every minute.
-   * '0 0 * * *' // At 00:00 every day.
-   * '0 0 * * TUE' // At 00:00 on Tuesday.
-   * '0 0 * * 6,0' // At 00:00 on Saturday and Sunday.
-   */
-  schedule?: string;
+  /** Optional schedule for when an action is ran on an interval. */
+  schedule?: Agenda;
 
   /** Flag for enabling and disabling a command, while disabled a command will not run. */
   enabled: boolean;
